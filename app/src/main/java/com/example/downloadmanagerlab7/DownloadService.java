@@ -30,12 +30,11 @@ public class DownloadService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
-        createNotificationChannel(); // 🔹 luôn tạo channel trước
+        createNotificationChannel(); // tạo channel trước khi startForeground
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        // 🔹 Nếu nhận action từ Notification
         if (intent.getAction() != null) {
             handleAction(intent.getAction());
             return START_STICKY;
@@ -47,11 +46,11 @@ public class DownloadService extends Service {
             return START_NOT_STICKY;
         }
 
-        // 🔹 Tạo Notification an toàn, có icon + channel trước khi startForeground
+        // ⚙️ Tạo thông báo đầu tiên
         Notification startNotification = buildNotification("Chuẩn bị tải...", 0);
         startForeground(1, startNotification);
 
-        // 🔹 Tải file trong thread riêng
+        // ⚙️ Chạy thread tải file
         new Thread(() -> downloadFile(url)).start();
 
         return START_STICKY;
@@ -77,6 +76,7 @@ public class DownloadService extends Service {
             byte[] buffer = new byte[4096];
             int count;
             long total = 0;
+            int lastProgress = 0;
 
             while ((count = in.read(buffer)) != -1) {
                 if (isCancelled) break;
@@ -87,26 +87,34 @@ public class DownloadService extends Service {
 
                 total += count;
                 out.write(buffer, 0, count);
-                progress = (int) (total * 100 / length);
-                updateNotification("Đang tải...", progress);
+
+                // Tính phần trăm tải
+                int newProgress = (int) (total * 100 / length);
+
+                // ⚙️ Chỉ update khi tiến trình thay đổi ≥ 1%
+                if (newProgress - lastProgress >= 1) {
+                    lastProgress = newProgress;
+                    progress = newProgress;
+                    updateNotification("Đang tải... (" + progress + "%)", progress);
+                }
             }
 
             out.flush();
             out.close();
             in.close();
 
-            if (!isCancelled) updateNotification("Tải hoàn tất!", 100);
+            if (!isCancelled) updateNotification("✅ Tải hoàn tất! (100%)", 100);
             stopSelf();
 
         } catch (Exception e) {
             e.printStackTrace();
-            updateNotification("Lỗi khi tải!", progress);
+            updateNotification("❌ Lỗi khi tải!", progress);
             stopSelf();
         }
     }
 
+    // 🔔 Xây Notification có progress bar & text %
     private Notification buildNotification(String text, int progress) {
-        // 🔹 Các action
         Intent pauseIntent = new Intent(this, NotificationReceiver.class).setAction("PAUSE");
         Intent resumeIntent = new Intent(this, NotificationReceiver.class).setAction("RESUME");
         Intent cancelIntent = new Intent(this, NotificationReceiver.class).setAction("CANCEL");
@@ -115,28 +123,27 @@ public class DownloadService extends Service {
         PendingIntent pResume = PendingIntent.getBroadcast(this, 1, resumeIntent, PendingIntent.FLAG_IMMUTABLE);
         PendingIntent pCancel = PendingIntent.getBroadcast(this, 2, cancelIntent, PendingIntent.FLAG_IMMUTABLE);
 
-        // 🔹 Notification hợp lệ có icon hệ thống
         return new NotificationCompat.Builder(this, CHANNEL_ID)
                 .setContentTitle("Download Manager")
                 .setContentText(text)
-                .setSmallIcon(android.R.drawable.stat_sys_download) // ✅ icon hệ thống an toàn
-                .setProgress(100, progress, false)
+                .setSmallIcon(android.R.drawable.stat_sys_download)
+                .setProgress(100, progress, false) // ⚙️ thanh tiến trình
                 .addAction(android.R.drawable.ic_media_pause, "Pause", pPause)
                 .addAction(android.R.drawable.ic_media_play, "Resume", pResume)
                 .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Cancel", pCancel)
-                .setOngoing(!text.contains("hoàn tất") && !text.contains("Lỗi"))
+                .setOnlyAlertOnce(true) // không rung mỗi lần update
+                .setOngoing(!text.contains("hoàn tất") && !text.contains("Lỗi") && !text.contains("hủy"))
                 .build();
     }
 
+    // 🔁 Cập nhật thông báo (hiển thị progress mới)
     private void updateNotification(String text, int progress) {
         NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-        if (nm != null) {
-            nm.notify(1, buildNotification(text, progress));
-        }
+        if (nm != null) nm.notify(1, buildNotification(text, progress));
     }
 
+    // 🔧 Tạo Notification Channel cho Android 8+
     private void createNotificationChannel() {
-        // 🔹 Tạo kênh thông báo nếu Android >= 8.0
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
                     CHANNEL_ID,
@@ -149,19 +156,20 @@ public class DownloadService extends Service {
         }
     }
 
+    // ▶ Xử lý các nút Pause / Resume / Cancel
     private void handleAction(String action) {
         switch (action) {
             case "PAUSE":
                 isPaused = true;
-                updateNotification("Tạm dừng...", progress);
+                updateNotification("⏸️ Tạm dừng...", progress);
                 break;
             case "RESUME":
                 isPaused = false;
-                updateNotification("Tiếp tục tải...", progress);
+                updateNotification("▶️ Tiếp tục tải...", progress);
                 break;
             case "CANCEL":
                 isCancelled = true;
-                updateNotification("Đã hủy tải!", progress);
+                updateNotification("🛑 Đã hủy tải!", progress);
                 stopSelf();
                 break;
         }
